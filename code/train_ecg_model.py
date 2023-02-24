@@ -100,7 +100,6 @@ class ECGLightningModel(pl.LightningModule):
         self.log("lr", self.hparams.lr, on_step=False, on_epoch=True)
 
     def validation_step(self, batch, batch_idx):
-
         x, targets = batch
         preds = self(x)
         if self.ce:
@@ -483,8 +482,14 @@ def cli_main():
     # start training
     if not args.test_only:
         trainer.fit(pl_model, datamodule)
-        trainer.save_checkpoint(os.path.join(
-            args.logdir, experiment_name, "checkpoints", "model.ckpt"))
+        checkpoint_dir = join(
+            args.logdir, experiment_name, "checkpoints")
+        trainer.save_checkpoint(join(
+            checkpoint_dir, "model.ckpt"))
+        early_stopped_model = [x for x in os.listdir(checkpoint_dir) if 'epoch' in x][0]
+        early_stopped_path = join(checkpoint_dir, early_stopped_model)
+        logger.info("load early stopping model from {} for final evaluation".format(early_stopped_path))
+        load_from_checkpoint(pl_model, early_stopped_path)
 
     _ = trainer.validate(pl_model, datamodule=datamodule)
     _ = trainer.test(pl_model, datamodule=datamodule)

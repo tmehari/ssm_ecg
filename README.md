@@ -25,7 +25,7 @@ The finetuned model will be stored in a directory next to the location of the pr
 ### B1. Supervised Training 
 `code/train_ecg_model.py` was used to perform the supervised training experiments, run 
 
-`python code/train_ecg_model.py --dataset ./data/ptb_xl_fs100 --label_class --label_all --model s4
+`python code/train_ecg_model.py --dataset ./data/ptb_xl_fs100 --label_class label_all --gpu --model s4
 --logdir logs/s4_bidirectional`
 
 to train a bidirectional S4 model on the PTB-XL dataset.
