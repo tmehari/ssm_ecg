@@ -51,6 +51,11 @@ class TNormalize(Transformation):
                     self.stats_std[:,i]=1
 
     def __call__(self, sample):
+        if len(sample) == 3:
+            return self._call3(sample)
+        return self._call2(sample)
+    
+    def _call2(self, sample):
         datax, labelx = sample
         data = datax if self.input else labelx
         #assuming channel last
@@ -64,12 +69,27 @@ class TNormalize(Transformation):
             return (data.T, labelx)
         else:
             return (datax.T, data)
+        
+    def _call3(self, sample):
+        datax, labelx, static = sample
+        data = datax if self.input else labelx
+        #assuming channel last
+        data=data.T
+        if(self.stats_mean is not None):
+            data = data - self.stats_mean
+        if(self.stats_std is not None):
+            data = data/self.stats_std
+
+        if(self.input):
+            return (data.T, labelx, static)
+        else:
+            return (datax.T, data, static)
 
 class ECGDataSetWrapper(object):
 
     def __init__(self, batch_size, num_workers, target_folder, input_size=250, label="label_diag_superclass", test=False,
                  shuffle_train=True, drop_last=True, nomemmap=False, test_folds=[8, 9], filter_label=None, combination='both', val_stride=None,
-                  normalize=False):
+                  normalize=False, use_meta_information_in_head=False):
         self.batch_size = batch_size
         self.num_workers = num_workers
         self.target_folder = Path(target_folder)
@@ -89,6 +109,7 @@ class ECGDataSetWrapper(object):
         self.combination = combination
         self.val_stride = val_stride
         self.normalize=normalize
+        self.use_meta_information_in_head=use_meta_information_in_head
 
     def get_data_loaders(self):
         if self.normalize:
@@ -134,7 +155,7 @@ class ECGDataSetWrapper(object):
         else:
             valid_fold = 9
             test_fold = 10
-        if "thew" in str(target_folder) or "chapman" in str(target_folder) or "sph" in str(target_folder):
+        if "thew" in str(target_folder) or "chapman" in str(target_folder) or "sph" in str(target_folder) or 'icbeb' in str(target_folder):
             valid_fold -= 1
             test_fold -= 1
 
@@ -190,6 +211,11 @@ class ECGDataSetWrapper(object):
             self.lbl_itos = lbl_itos
             df_mapped["label"] = df_mapped["label"].apply(
                 lambda x: multihot_encode(x, len(lbl_itos)))
+        elif 'icbeb' in str(target_folder):
+            label = self.label
+            self.lbl_itos = np.array(lbl_itos[label])
+            df_mapped['label'] = df_mapped[label].apply(
+                    lambda x: multihot_encode(x, len(self.lbl_itos)))
         else:
             label = "label"
             self.lbl_itos = lbl_itos
@@ -197,15 +223,18 @@ class ECGDataSetWrapper(object):
                 lambda x: np.array([1, 0, 0, 0, 0]))
 
         self.num_classes = len(self.lbl_itos)
-
+        # import pdb; pdb.set_trace()
         df_mapped["diag_label"] = df_mapped[label].copy()
 
         df_train, df_valid, df_test = self.get_dfs(df_mapped, target_folder)
 
+        cols_static = ['sex', 'age_nonan', 'height_nonan', 'weight_nonan', 'age_isnan', 'height_isnan', 
+                     'weight_isnan'] if self.use_meta_information_in_head else None
+                        
         ################## create datasets ########################
-        train_ds = TimeseriesDatasetCrops(df_train, self.input_size, num_classes=self.num_classes, data_folder=target_folder, chunk_length=chunk_length_train if chunkify_train else 0,
+        train_ds = TimeseriesDatasetCrops(df_train, self.input_size, num_classes=self.num_classes, data_folder=target_folder, chunk_length=chunk_length_train if chunkify_train else 0, cols_static=cols_static,
                                           min_chunk_length=min_chunk_length, stride=stride_length_train, transforms=transforms, annotation=False, col_lbl="label", memmap_filename=target_folder/("memmap.npy"))
-        val_ds = TimeseriesDatasetCrops(df_valid, self.input_size, num_classes=self.num_classes, data_folder=target_folder, chunk_length=chunk_length_valid if chunkify_valid else 0,
+        val_ds = TimeseriesDatasetCrops(df_valid, self.input_size, num_classes=self.num_classes, data_folder=target_folder, chunk_length=chunk_length_valid if chunkify_valid else 0, cols_static=cols_static,
                                         min_chunk_length=min_chunk_length, stride=stride_length_valid, transforms=transforms, annotation=False, col_lbl="label", memmap_filename=target_folder/("memmap.npy"))
 
         self.df_train = df_train

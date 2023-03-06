@@ -89,6 +89,7 @@ def parse_args():
     parser.add_argument("--n_hidden", default=512, type=int)
     parser.add_argument("--input_size", default=250, type=int)
     parser.add_argument("--save_model_at")
+    parser.add_argument("--use_meta_information_in_head", action="store_true", default=False)
     args = parser.parse_args()
     return args
 
@@ -188,7 +189,10 @@ def adjust(model, num_classes, hidden=False):
     model.forward = def_forward(model)
 
 
-def configure_optimizer(model, batch_size, head_only=False, lr=None, discriminative_lr=False, base_model="xresnet1d", optimizer="adamw", discriminative_lr_factor=1, auc_maximization=False, num_classes=71):
+def configure_optimizer(model, batch_size, head_only=False, lr=None, discriminative_lr=False,
+                        base_model="xresnet1d", optimizer="adamw", 
+                        discriminative_lr_factor=1, auc_maximization=False, 
+                        num_classes=71, use_meta_information_in_head=False):
 
     if auc_maximization:
         loss_fn = auc_loss([1./num_classes]*num_classes).to(device)
@@ -259,10 +263,17 @@ def configure_optimizer(model, batch_size, head_only=False, lr=None, discriminat
         wd = 1e-3
         if(head_only):
             lr = 1e-3
-            print("Linear eval: model head", model.head)
-            optimizer = opt(model.head.parameters(), lr, weight_decay=wd)
+            print("Head only training, model head:", model.head)
+            if use_meta_information_in_head:
+                print("Meta Head:", model.meta_head)
+                optimizer = opt([
+                    {'params': model.head.parameters(),"lr": lr},
+                    {'params': model.meta_head.parameters(), "lr": lr}]
+                                , lr, weight_decay=wd)
+            else:
+                optimizer = opt(model.head.parameters(), lr, weight_decay=wd)
         elif(discriminative_lr_factor != 1.):  # discrimative lrs
-            optimizer = opt([{
+            paramgroup = [{
                             "params": model.encoder.parameters(), 
                             "lr": lr*discriminative_lr_factor*discriminative_lr_factor
                             }, 
@@ -272,11 +283,19 @@ def configure_optimizer(model, batch_size, head_only=False, lr=None, discriminat
                             }, 
                             {"params": model.head.parameters(), 
                             "lr": lr
-                            }
-                            ], 
+                            }]
+            if use_meta_information_in_head:
+               paramgroup.append(
+                           {"params": model.meta_head.parameters(), 
+                           "lr": lr*discriminative_lr_factor
+                           }
+                           )
+            optimizer = opt(paramgroup, 
                             lr, 
                             weight_decay=wd)
             print("Finetuning: model head", model.head)
+            if use_meta_information_in_head:
+                print("Finetuning: model meta head", model.meta_head)
             print("discriminative lr: ", discriminative_lr_factor)
             print('lr',lr)
         else:
@@ -299,9 +318,11 @@ def configure_optimizer(model, batch_size, head_only=False, lr=None, discriminat
 
 
 def load_model(linear_evaluation, num_classes, use_pretrained, discriminative_lr=False, hidden=False, conv_encoder=False, bn_head=False, ps_head=0.5,
-               location="./checkpoints/moco_baselinewonder200.ckpt", method="simclr", base_model="xresnet1d50", out_dim=71, widen=1, n_hidden=512):
+               location="./checkpoints/moco_baselinewonder200.ckpt", method="simclr",
+               base_model="xresnet1d50", out_dim=71, widen=1, n_hidden=512,
+               use_meta_information_in_head=False):
     discriminative_lr_factor = 1
-
+    
     def tlenet():
         bn = True
         ps = False
@@ -431,9 +452,11 @@ def load_model(linear_evaluation, num_classes, use_pretrained, discriminative_lr
                 ps_head = ps_head
                 lin_ftrs_head = [512] if hidden else None 
                 bn_head = bn_head
-            model = CPCModel(input_channels=12, num_classes=num_classes, strides=strides, kss=kss,
-             features=features, mlp=True, bn_encoder=True, lin_ftrs_head=lin_ftrs_head, s4=True,bn_head=bn_head,
-             ps_head=ps_head, s4_d_model=512, s4_d_state=8, s4_l_max= 1024, concat_pooling=False).to(device)
+            model = CPCModel(input_channels=12, num_classes=num_classes, strides=strides,
+                             kss=kss,features=features, mlp=True, bn_encoder=True,
+                             lin_ftrs_head=lin_ftrs_head, s4=True,bn_head=bn_head, 
+                             ps_head=ps_head, s4_d_model=512, s4_d_state=8, s4_l_max= 1024,
+                             concat_pooling=False, use_meta_information_in_head=use_meta_information_in_head).to(device)
             if "state_dict" in lightning_state_dict.keys():
                 print("load pretrained model")
                 model_state_dict = get_new_state_dict(
@@ -441,7 +464,6 @@ def load_model(linear_evaluation, num_classes, use_pretrained, discriminative_lr
             else:
                 print("load already finetuned model")
                 model_state_dict = lightning_state_dict
-
             model.load_state_dict(model_state_dict)
         else:
             model = ResNetSimCLR(base_model, num_classes,
@@ -525,17 +547,23 @@ def load_model(linear_evaluation, num_classes, use_pretrained, discriminative_lr
                 ps_head = ps_head
                 lin_ftrs_head = [512] if hidden else None 
                 bn_head = bn_head
-            model = CPCModel(input_channels=12, num_classes=num_classes, strides=strides, kss=kss, features=features, mlp=True,
-             bn_encoder=True, ps_head=ps_head, bn_head=bn_head, lin_ftrs_head=lin_ftrs_head, s4=True, s4_d_model=512, s4_d_state=8, s4_l_max= 1024).to(device)
-            
+            model = CPCModel(input_channels=12, num_classes=num_classes, strides=strides, 
+                             kss=kss, features=features, mlp=True,
+             bn_encoder=True, ps_head=ps_head, bn_head=bn_head, lin_ftrs_head=lin_ftrs_head,
+             s4=True, s4_d_model=512, s4_d_state=8, s4_l_max= 1024, 
+             use_meta_information_in_head=use_meta_information_in_head).to(device)
         else:
             raise Exception("model unknown")
 
     return model
 
 
-def evaluate(model, dataloader, idmap, lbl_itos, base_model='xresnet1d', ptb_to_zheng=False):
-    preds, targs = eval_model(model, dataloader, base_model=base_model)
+def evaluate(model, dataloader, idmap, lbl_itos, base_model='xresnet1d',
+             ptb_to_zheng=False, use_meta_information_in_head=False):
+    if use_meta_information_in_head:
+        preds, targs = eval_model_with_meta(model, dataloader, base_model=base_model)
+    else:
+        preds, targs = eval_model(model, dataloader, base_model=base_model)
     
     if ptb_to_zheng:
         mapping = get_ptb_to_zheng()
@@ -572,8 +600,10 @@ def set_train_eval(model, cpc, linear_evaluation):
         model.train()
 
 
-def train_model(model, train_loader, valid_loader, test_loader, epochs, loss_fn, optimizer, head_only=True, linear_evaluation=False, percentage=1, lr_schedule=None,
-                save_model_at=None, val_idmap=None, test_idmap=None, lbl_itos=None, cpc=False, it_per_print=100, base_model='xresnet1d'):
+def train_model(model, train_loader, valid_loader, test_loader, epochs, loss_fn, optimizer, 
+                head_only=True, linear_evaluation=False, percentage=1, lr_schedule=None,
+                save_model_at=None, val_idmap=None, test_idmap=None, lbl_itos=None,
+                cpc=False, it_per_print=100, base_model='xresnet1d', use_meta_information_in_head=False):
     if head_only:
         if linear_evaluation:
             print("linear evaluation for {} epochs".format(epochs))
@@ -584,7 +614,7 @@ def train_model(model, train_loader, valid_loader, test_loader, epochs, loss_fn,
 
     if head_only:
         for key, param in model.named_parameters():
-            if "l1." not in key and "head." not in key:
+            if "l1." not in key and "head." not in key and "meta_head." not in key:
                 param.requires_grad = False
         print("copying state dict before training for sanity check after training")
 
@@ -614,8 +644,11 @@ def train_model(model, train_loader, valid_loader, test_loader, epochs, loss_fn,
     best_preds = None
     test_macro = 0
     test_macro_agg = 0
+   
     _, _, macro_agg, _ = evaluate(
-        model, valid_loader, val_idmap, lbl_itos, base_model=base_model)
+        model, valid_loader, val_idmap, lbl_itos, base_model=base_model,
+        use_meta_information_in_head=use_meta_information_in_head)
+    
     best_macro_agg = macro_agg
     set_train_eval(model, cpc, linear_evaluation)
     print('agg macro before training:', macro_agg)
@@ -632,7 +665,11 @@ def train_model(model, train_loader, valid_loader, test_loader, epochs, loss_fn,
             data = samples[0].to(device).type(data_type)
             labels = samples[1].to(device).type(data_type)
             optimizer.zero_grad()
-            preds = model(data)
+            if use_meta_information_in_head:
+                static = samples[2].to(device).type(data_type)
+                preds = model.forward_with_meta(data, static)
+            else:
+                preds = model(data)
             loss = loss_fn(preds, labels)
             loss.backward()
             optimizer.step()
@@ -642,7 +679,8 @@ def train_model(model, train_loader, valid_loader, test_loader, epochs, loss_fn,
         loss_per_epoch.append(total_loss_one_epoch)
 
         preds, macro, macro_agg, _ = evaluate(
-            model, valid_loader, val_idmap, lbl_itos, base_model=base_model)
+            model, valid_loader, val_idmap, lbl_itos, base_model=base_model, 
+            use_meta_information_in_head=use_meta_information_in_head)
         macro_agg_per_epoch.append(macro_agg)
 
         print("loss:", total_loss_one_epoch)
@@ -655,7 +693,8 @@ def train_model(model, train_loader, valid_loader, test_loader, epochs, loss_fn,
             best_epoch = epoch
             best_preds = preds
             _, test_macro, test_macro_agg, _ = evaluate(
-                model, test_loader, test_idmap, lbl_itos, base_model=base_model)
+                model, test_loader, test_idmap, lbl_itos,
+                base_model=base_model, use_meta_information_in_head=use_meta_information_in_head)
 
         set_train_eval(model, cpc, linear_evaluation)
 
@@ -714,7 +753,7 @@ def eval_model(model, valid_loader, base_model='xresnet1d'):
     with torch.no_grad():
         for batch_idx, samples in tqdm(enumerate(valid_loader)):
             data = samples[0].to(device).type(data_type)
-            preds_tmp = torch.sigmoid(model(data))
+            preds_tmp = model(data)
             targs.append(samples[1])
             preds.append(preds_tmp.cpu())
         preds = torch.cat(preds).numpy()
@@ -724,8 +763,33 @@ def eval_model(model, valid_loader, base_model='xresnet1d'):
     return preds, targs
 
 
-def get_dataset(batch_size, num_workers, target_folders, apply_noise=False, percentage=1.0, folds=8, noise_level=0, test=False, normalize=False, label_class="label_all", stability_training=False,
-                domain_adaptation=False, label_noise=False, p=0.01, filter_labels=[], input_size=250, plus_norm_as_background=False):
+def eval_model_with_meta(model, valid_loader, base_model='xresnet1d'):
+    if 'cpc' in base_model or 's4' in base_model:
+        data_type = model.encoder[0][0].weight.type()
+    elif 'lenet' in base_model:
+        data_type = model[0].weight.type()  # model.features[0]
+    else:
+        data_type = model.features[0][0].weight.type()
+    model.eval()
+    preds = []
+    targs = []
+    with torch.no_grad():
+        for batch_idx, samples in tqdm(enumerate(valid_loader)):
+            data = samples[0].to(device).type(data_type)
+            static = samples[2].to(device).type(data_type)
+            preds_tmp = model.forward_with_meta(data, static)
+            targs.append(samples[1])
+            preds.append(preds_tmp.cpu())
+        preds = torch.cat(preds).numpy()
+        targs = torch.cat(targs).numpy()
+    return preds, targs
+
+
+def get_dataset(batch_size, num_workers, target_folders, apply_noise=False, percentage=1.0, 
+                folds=8, noise_level=0, test=False, normalize=False, label_class="label_all",
+                stability_training=False, domain_adaptation=False, label_noise=False,
+                p=0.01, filter_labels=[], input_size=250, plus_norm_as_background=False, 
+                use_meta_information_in_head=False):
     t_params_by_level = {
         0: {},
         1: {"bw_cmax": 0.05, "em_cmax": 0.25, "pl_cmax": 0.1, "bs_cmax": 0.5},
@@ -745,8 +809,9 @@ def get_dataset(batch_size, num_workers, target_folders, apply_noise=False, perc
     lbl_itos_file = [x for x in os.listdir(target_folders[0]) if 'lbl_itos' in x][0]
     lbl_itos = np.load(join(target_folders[0], lbl_itos_file),
                        allow_pickle=True)[label_class]
+    
     dataset = ECGDataSetWrapper(batch_size, num_workers, target_folders[0], normalize=normalize, 
-        test=test, input_size=input_size, label=label_class)
+        test=test, input_size=input_size, label=label_class, use_meta_information_in_head=use_meta_information_in_head)
 
     train_loader, valid_loader = dataset.get_data_loaders()
     return dataset, train_loader, valid_loader
@@ -886,12 +951,22 @@ def run():
     # else:
     #     num_classes = ptb_num_classes[args.label_class] if args.num_classes is None else args.num_classes
     _, train_loader, _ = get_dataset(
-        args.batch_size, args.num_workers, [args.target_folder], folds=args.folds, test=args.test, normalize=args.normalize, label_class=args.label_class, filter_labels=args.filter_labels, input_size=args.input_size)
+        args.batch_size, args.num_workers, [args.target_folder], folds=args.folds, 
+        test=args.test, normalize=args.normalize, label_class=args.label_class, 
+        filter_labels=args.filter_labels, input_size=args.input_size, 
+        use_meta_information_in_head=args.use_meta_information_in_head)
     dataset, _, valid_loader = get_dataset(
-        args.batch_size, args.num_workers, [args.target_folder], folds=args.folds, test=False, normalize=args.normalize, label_class=args.label_class, filter_labels=args.filter_labels, input_size=args.input_size)
+        args.batch_size, args.num_workers, [args.target_folder], folds=args.folds, 
+        test=False, normalize=args.normalize, label_class=args.label_class, 
+        filter_labels=args.filter_labels, input_size=args.input_size,
+        use_meta_information_in_head=args.use_meta_information_in_head)
     val_idmap = dataset.val_ds_idmap
     dataset, _, test_loader = get_dataset(
-        args.batch_size, args.num_workers, [args.target_folder], test=True, normalize=args.normalize, label_class=args.label_class, filter_labels=args.filter_labels, input_size=args.input_size)
+        args.batch_size, args.num_workers, [args.target_folder], test=True, 
+        normalize=args.normalize, label_class=args.label_class, 
+        filter_labels=args.filter_labels, input_size=args.input_size, 
+        use_meta_information_in_head=args.use_meta_information_in_head)
+    
     test_idmap = dataset.val_ds_idmap
     lbl_itos = dataset.lbl_itos
     num_classes = len(lbl_itos)
@@ -921,19 +996,27 @@ def run():
     model = load_model(
         args.linear_evaluation, num_classes, args.use_pretrained or args.load_finetuned, hidden=args.hidden,
         location=args.model_file, discriminative_lr=args.discriminative_lr, method=args.method, base_model=args.base_model,
-        bn_head=args.bn_head, ps_head=args.ps_head, out_dim=args.num_classes, n_hidden=args.n_hidden, conv_encoder=args.conv_encoder)
+        bn_head=args.bn_head, ps_head=args.ps_head, out_dim=args.num_classes, n_hidden=args.n_hidden, 
+        conv_encoder=args.conv_encoder, use_meta_information_in_head=args.use_meta_information_in_head)
     used_optimizer = "pesg" if args.auc_maximization else args.optimizer
     loss_fn, optimizer = configure_optimizer(
         model, args.batch_size, head_only=True, optimizer=used_optimizer, auc_maximization=args.auc_maximization, num_classes=num_classes,
-        discriminative_lr=args.discriminative_lr, discriminative_lr_factor=0.1 if args.use_pretrained and args.discriminative_lr else 1, base_model=args.base_model)
+        discriminative_lr=args.discriminative_lr, discriminative_lr_factor=0.1 if args.use_pretrained and args.discriminative_lr else 1, base_model=args.base_model,
+        use_meta_information_in_head=args.use_meta_information_in_head)
     if not args.eval_only:
         print("train model...")
         if not isdir(save_model_at):
             os.mkdir(save_model_at)
 
-        l1, m1, bm, bm_agg, tm, tm_agg, ckpt_epoch_lin, preds = train_model(model, train_loader, valid_loader, test_loader, args.l_epochs, loss_fn,
-                                                                            optimizer, head_only=True, linear_evaluation=args.linear_evaluation, lr_schedule=args.lr_schedule, save_model_at=join(save_model_at, "finetuned_"+args.trial_nr+".pt"),
-                                                                            val_idmap=val_idmap, test_idmap=test_idmap, lbl_itos=lbl_itos, cpc=(args.method == "cpc"), base_model=args.base_model)
+        l1, m1, bm, bm_agg, tm, tm_agg, ckpt_epoch_lin, preds = train_model(
+            model, train_loader, valid_loader, test_loader, args.l_epochs, loss_fn, optimizer,
+            head_only=True, linear_evaluation=args.linear_evaluation, lr_schedule=args.lr_schedule,
+            save_model_at=join(save_model_at, "finetuned_"+args.trial_nr+".pt"),
+            val_idmap=val_idmap, test_idmap=test_idmap, lbl_itos=lbl_itos, 
+            cpc=(args.method == "cpc" or args.method == "s4"), base_model=args.base_model,
+            use_meta_information_in_head=args.use_meta_information_in_head
+            )
+        
         if bm != 0:
             print("best macro after head-only training:", bm_agg)
         l2 = []
@@ -943,12 +1026,16 @@ def run():
                 model = load_model(
                     False, num_classes, True, hidden=args.hidden,
                     location=join(save_model_at, "finetuned_" + args.trial_nr + ".pt"), discriminative_lr=args.discriminative_lr, method=args.method,
-                    base_model=args.base_model, bn_head=args.bn_head, ps_head=args.ps_head, out_dim=args.num_classes, n_hidden=args.n_hidden, conv_encoder=args.conv_encoder)
+                    base_model=args.base_model, bn_head=args.bn_head, ps_head=args.ps_head, out_dim=args.num_classes, n_hidden=args.n_hidden, conv_encoder=args.conv_encoder,
+                    use_meta_information_in_head=args.use_meta_information_in_head)
             loss_fn, optimizer = configure_optimizer(
-                model, args.batch_size, head_only=False, num_classes=num_classes, optimizer=used_optimizer, auc_maximization=args.auc_maximization, discriminative_lr=args.discriminative_lr, discriminative_lr_factor=0.1 if args.use_pretrained and args.discriminative_lr else 1, base_model=args.base_model)
+                model, args.batch_size, head_only=False, num_classes=num_classes, optimizer=used_optimizer, 
+                auc_maximization=args.auc_maximization, discriminative_lr=args.discriminative_lr,
+                discriminative_lr_factor=0.1 if args.use_pretrained and args.discriminative_lr else 1, 
+                base_model=args.base_model, use_meta_information_in_head=args.use_meta_information_in_head)
             l2, m2, bm, bm_agg, tm, tm_agg, ckpt_epoch_fin, preds = train_model(model, train_loader, valid_loader, test_loader, args.f_epochs, loss_fn,
                                                                                 optimizer, head_only=False, linear_evaluation=False, lr_schedule=args.lr_schedule, save_model_at=join(save_model_at, "finetuned_"+args.trial_nr+".pt"),
-                                                                                val_idmap=val_idmap, test_idmap=test_idmap, lbl_itos=lbl_itos, cpc=(args.method == "cpc"), base_model=args.base_model)
+                                                                                val_idmap=val_idmap, test_idmap=test_idmap, lbl_itos=lbl_itos, cpc=(args.method == "cpc"), base_model=args.base_model, use_meta_information_in_head=args.use_meta_information_in_head)
         losses.append(l1+l2)
         macros.append(m1+m2)
         test_macros.append(tm)
@@ -983,7 +1070,9 @@ def run():
            "test_macros": test_macros, "test_macros_agg": test_macros_agg, "noised_macros": noised_macros, "noised_macros_agg": noised_macros_agg, "scores_agg": scores_agg, "noise_scores_agg": noise_scores_agg, "ckpt_epoch_lin": ckpt_epoch_lin, "ckpt_epoch_fin": ckpt_epoch_fin,
            "discriminative_lr": args.discriminative_lr, "hidden": args.hidden, "lr_schedule": args.lr_schedule,
            "use_pretrained": args.use_pretrained, "linear_evaluation": args.linear_evaluation, "loaded_finetuned": args.load_finetuned,
-           "eval_only": args.eval_only, "noise_level": args.noise_level, "test_noised": args.test_noised, "normalized": args.normalize}
+           "eval_only": args.eval_only, "noise_level": args.noise_level, "test_noised": args.test_noised, "normalized": args.normalize, 
+           'use_meta_information_in_head':args.use_meta_information_in_head, "batch_size":args.batch_size
+           }
     pickle.dump(res, open(filename, "wb"))
     print("dumped results to", filename)
     print(res)

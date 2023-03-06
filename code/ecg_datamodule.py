@@ -27,6 +27,7 @@ class ECGDataModule(LightningDataModule):
             filter_label=None,
             val_stride=None,
             normalize=False,
+            use_meta_information_in_head=False,
             *args,
             **kwargs,
     ):
@@ -47,6 +48,7 @@ class ECGDataModule(LightningDataModule):
         self.filter_label = filter_label
         self.val_stride = val_stride
         self.normalize=normalize
+        self.use_meta_information_in_head = use_meta_information_in_head
         self.set_params()
 
     def set_params(self):
@@ -62,17 +64,17 @@ class ECGDataModule(LightningDataModule):
 
     def train_dataloader(self):
         _, train_loader, _ = get_dataset(self.batch_size, self.num_workers, self.target_folder, label_class=self.label_class,
-                                         input_size=self.data_input_size, shuffle_train=self.shuffle_train, nomemmap=self.nomemmap, test_folds=self.test_folds, combination=self.combination, filter_label=self.filter_label, normalize=self.normalize)
+                                         input_size=self.data_input_size, shuffle_train=self.shuffle_train, nomemmap=self.nomemmap, test_folds=self.test_folds, combination=self.combination, filter_label=self.filter_label, normalize=self.normalize, use_meta_information_in_head=self.use_meta_information_in_head)
         return train_loader
 
     def val_dataloader(self):
         _, _, valid_loader = get_dataset(self.batch_size, self.num_workers, self.target_folder, label_class=self.label_class,
-                                         input_size=self.data_input_size, nomemmap=self.nomemmap, test_folds=self.test_folds, combination=self.combination, filter_label=self.filter_label, val_stride=self.val_stride, normalize=self.normalize)
+                                         input_size=self.data_input_size, nomemmap=self.nomemmap, test_folds=self.test_folds, combination=self.combination, filter_label=self.filter_label, val_stride=self.val_stride, normalize=self.normalize, use_meta_information_in_head=self.use_meta_information_in_head)
         return valid_loader
 
     def test_dataloader(self):
         dataset, _, valid_loader = get_dataset(self.batch_size, self.num_workers, self.target_folder, test=True,
-                                         label_class=self.label_class, input_size=self.data_input_size, nomemmap=self.nomemmap, test_folds=self.test_folds, combination=self.combination, filter_label=self.filter_label, normalize=self.normalize)
+                                         label_class=self.label_class, input_size=self.data_input_size, nomemmap=self.nomemmap, test_folds=self.test_folds, combination=self.combination, filter_label=self.filter_label, normalize=self.normalize, use_meta_information_in_head=self.use_meta_information_in_head)
         self.test_idmap = dataset.val_ds_idmap
         return valid_loader
 
@@ -80,10 +82,15 @@ class ECGDataModule(LightningDataModule):
         pass
 
 
-def get_dataset(batch_size, num_workers, target_folder, test=False, label_class="label_all", input_size=250, shuffle_train=False, nomemmap=False, test_folds=[8, 9], combination='both', filter_label=None, val_stride=None, normalize=False):
+def get_dataset(batch_size, num_workers, target_folder, test=False, label_class="label_all", 
+                input_size=250, shuffle_train=False, nomemmap=False, test_folds=[8, 9], 
+                combination='both', filter_label=None, val_stride=None, normalize=False, use_meta_information_in_head=False):
+    
     dataset = ECGDataSetWrapper(
-        batch_size, num_workers, target_folder, test=test, label=label_class, input_size=input_size, shuffle_train=shuffle_train, nomemmap=nomemmap,
-        normalize=normalize, test_folds=test_folds, combination=combination, filter_label=filter_label, val_stride=val_stride)
+        batch_size, num_workers, target_folder, test=test, label=label_class, 
+        input_size=input_size, shuffle_train=shuffle_train, nomemmap=nomemmap,
+        normalize=normalize, test_folds=test_folds, combination=combination,
+        filter_label=filter_label, val_stride=val_stride, use_meta_information_in_head=use_meta_information_in_head)
 
     train_loader, valid_loader = dataset.get_data_loaders()
     return dataset, train_loader, valid_loader

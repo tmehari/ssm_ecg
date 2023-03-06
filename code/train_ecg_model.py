@@ -48,6 +48,7 @@ class ECGLightningModel(pl.LightningModule):
         rate=1.0, 
         sigmoid_eval=True,
         save_preds=False,
+        use_meta_information_in_head=False,
         **kwargs
     ):
         """
@@ -70,21 +71,35 @@ class ECGLightningModel(pl.LightningModule):
         self.test_scores = None
         self.sigmoid_eval=sigmoid_eval
         self.save_preds = save_preds
+        self.use_meta_information_in_head = use_meta_information_in_head
+        if use_meta_information_in_head:
+            logger.info("Use meta information in Lightning Model")
 
+    
     def configure_optimizers(self):
         optimizer = self.hparams.opt(self.model.parameters(
         ), lr=self.hparams.lr, weight_decay=self.hparams.wd)
-        # pdb.set_trace()
+        
         return optimizer
 
     def forward(self, x, eval=False):
         if isinstance(self.model, S4Model):
             return self.model(x.float(), rate=self.hparams.rate)
         return self.model(x.float())
+    
+    def forward_with_meta(self, x, meta_feats, eval=False):
+        if isinstance(self.model, S4Model):
+            return self.model.forward_with_meta(x.float(), meta_feats, rate=self.hparams.rate)
+        return self.model.forward_with_meta(x.float(), meta_feats)
 
     def training_step(self, batch, batch_idx):
-        x, targets = batch
-        preds = self(x)
+        if self.use_meta_information_in_head:
+            x, targets, meta = batch
+            preds = self.forward_with_meta(x, meta)
+        else:
+            x, targets = batch
+            preds = self(x)
+            
         if self.ce:
             preds = nn.Softmax(dim=1)(preds)
             loss = self.hparams.loss_fn(preds, targets)
@@ -100,8 +115,12 @@ class ECGLightningModel(pl.LightningModule):
         self.log("lr", self.hparams.lr, on_step=False, on_epoch=True)
 
     def validation_step(self, batch, batch_idx):
-        x, targets = batch
-        preds = self(x)
+        if self.use_meta_information_in_head:
+            x, targets, meta = batch
+            preds = self.forward_with_meta(x, meta)
+        else:
+            x, targets = batch
+            preds = self(x)
         if self.ce:
             preds = nn.Softmax(dim=1)(preds)
             loss = self.hparams.loss_fn(preds, targets)
@@ -115,9 +134,12 @@ class ECGLightningModel(pl.LightningModule):
         return results
 
     def test_step(self, batch, batch_idx):
-
-        x, targets = batch
-        preds = self(x)
+        if self.use_meta_information_in_head:
+            x, targets, meta = batch
+            preds = self.forward_with_meta(x, meta)
+        else:
+            x, targets = batch
+            preds = self(x)
         if self.ce:
             preds == nn.Softmax(dim=1)(preds)
             loss = self.hparams.loss_fn(preds, targets)
@@ -276,6 +298,8 @@ def parse_args(parent_parser):
     parser.add_argument("--concat_pooling",
                         action='store_true', default=False)
     parser.add_argument("--normalize", action='store_true', default=False)
+    parser.add_argument("--use_meta_information_in_head", action='store_true', default=False)
+    parser.add_argument("--cpc_bn_encoder", action='store_true', default=False)
     return parser
 
 
@@ -326,7 +350,8 @@ def cli_main():
         combination=args.combination,
         filter_label=args.filter_label,
         data_input_size=args.input_size,
-        normalize=args.normalize
+        normalize=args.normalize,
+        use_meta_information_in_head=args.use_meta_information_in_head
     )
     # pdb.set_trace()
 
@@ -341,7 +366,7 @@ def cli_main():
         return mod
 
     def create_model():
-        return ECGResNet("xresnet1d50", datamodule.num_classes, big_input=False)
+        return ECGResNet("xresnet1d50", datamodule.num_classes, big_input=False, use_meta_information_in_head=args.use_meta_information_in_head)
 
     def lenet():
         bn = True
@@ -393,7 +418,8 @@ def cli_main():
 
     def create_s4():
         return S4Model(d_input=12, d_output=datamodule.num_classes, l_max=datamodule.data_input_size, d_state=args.d_state,
-                       d_model=args.d_model, n_layers=args.n_layers, dropout=args.s4_dropout, bn=args.bn, bidirectional=True)
+                       d_model=args.d_model, n_layers=args.n_layers, dropout=args.s4_dropout, bn=args.bn, bidirectional=True,
+                       use_meta_information_in_head=args.use_meta_information_in_head)
 
     def create_s4_causal():
         return S4Model(d_input=12, d_output=datamodule.num_classes, l_max=datamodule.data_input_size, 
@@ -416,10 +442,11 @@ def cli_main():
         strides=[1]*num_encoder_layers 
         kss=[1]*num_encoder_layers
         features = [512]*num_encoder_layers
-        bn_encoder=False
+        bn_encoder=args.cpc_bn_encoder
         model = CPCModel(input_channels=12, num_classes=datamodule.num_classes, strides=strides, kss=kss, features=features, mlp=True,
         bn_encoder=bn_encoder, ps_head=0.0, bn_head=False, lin_ftrs_head=None, s4=True, s4_d_model=512, s4_d_state=8,
-        s4_l_max=1024, concat_pooling=args.concat_pooling, skip_encoder=False, s4_n_layers=args.n_layers)
+        s4_l_max=1024, concat_pooling=args.concat_pooling, skip_encoder=False, s4_n_layers=args.n_layers,
+        use_meta_information_in_head=args.use_meta_information_in_head)
         return model
 
     if args.model == 's4':
@@ -447,7 +474,8 @@ def cli_main():
         lr=args.lr,
         rate=args.rate,
         loss_fn=nn.CrossEntropyLoss(
-        ) if args.binary_classification else F.binary_cross_entropy_with_logits
+        ) if args.binary_classification else F.binary_cross_entropy_with_logits,
+        use_meta_information_in_head=args.use_meta_information_in_head
     )
     # configure trainer
     tb_logger = TensorBoardLogger(
@@ -463,12 +491,29 @@ def cli_main():
 
     def load_from_checkpoint(pl_model, checkpoint_path):
         lightning_state_dict = torch.load(checkpoint_path)
-        state_dict = lightning_state_dict["state_dict"]
-
-        for name, param in pl_model.named_parameters():
-            param.data = state_dict[name].data
-        for name, param in pl_model.named_buffers():
-            param.data = state_dict[name].data
+        if 'state_dict' in lightning_state_dict.keys():
+            state_dict = lightning_state_dict["state_dict"] 
+            for name, param in pl_model.named_parameters():
+                param.data = state_dict[name].data
+            for name, param in pl_model.named_buffers():
+                param.data = state_dict[name].data
+        else:
+            state_dict = lightning_state_dict
+            fails = []
+            for name, param in pl_model.named_parameters():
+                if name[6:] in state_dict.keys() and param.data.shape == state_dict[name[6:]].data.shape:
+                    param.data = state_dict[name[6:]].data
+                else:
+                    fails.append(name)    
+            for name, param in pl_model.named_buffers():
+                if name[6:] in state_dict.keys() and param.data.shape == state_dict[name[6:]].data.shape:
+                    param.data = state_dict[name[6:]].data
+                else:
+                    fails.append(name)  
+            if len(fails) != 0:
+                print("could not load {}".format(fails))
+            else:
+                print("all weights loaded succesfully {}".format(fails))
 
     # load checkpoint
     if args.checkpoint_path != "":

@@ -11,6 +11,7 @@ sys.path.append(egg_path)
 
 import cauchy_mult
 from dl_models.s4 import S4
+from .basic_conv1d import bn_drop_lin
 
 class S4Model(nn.Module):
 
@@ -27,6 +28,7 @@ class S4Model(nn.Module):
         transposed_input=True,
         bn = False,
         bidirectional=False,
+        use_meta_information_in_head=False
     ):
         super().__init__()
 
@@ -64,9 +66,13 @@ class S4Model(nn.Module):
         if(d_output is None):
             self.decoder = None
         else:
-            self.decoder = nn.Linear(d_model, d_output)
-        
+            self.decoder = nn.Linear(d_model + 64 if use_meta_information_in_head else d_model, d_output)
+        if use_meta_information_in_head:
+            meta_modules = bn_drop_lin(7, 64, bn=False,actn=nn.ReLU()) +\
+            bn_drop_lin(64, 64, bn=True, p=0.5, actn=nn.ReLU()) + bn_drop_lin(64, 64, bn=True, p=0.5, actn=nn.ReLU())
+            self.meta_head = nn.Sequential(*meta_modules)
 
+        
     def forward(self, x, rate=1.0):
         """
         Input x is shape (B, d_input, L) if transposed_input else (B, L, d_input)
@@ -104,6 +110,51 @@ class S4Model(nn.Module):
         # Pooling: average pooling over the sequence length
         x = x.mean(dim=1)
 
+        # Decode the outputs
+        if self.decoder is not None:
+            x = self.decoder(x)  # (B, d_model) -> (B, d_output)
+
+        return x
+    
+    def forward_with_meta(self, x, meta_feats, rate=1.0):
+        """
+        Input x is shape (B, d_input, L) if transposed_input else (B, L, d_input)
+        """
+        x = self.encoder(
+            x)  # (B, d_input, L) -> (B, d_model, L) if transposed_input else (B, L, d_input) -> (B, L, d_model)
+        
+        if(self.transposed_input is False):
+            x = x.transpose(-1, -2)  # (B, L, d_model) -> (B, d_model, L)
+
+        for layer, norm, dropout in zip(self.s4_layers, self.norms, self.dropouts):
+            # Each iteration of this loop will map (B, d_model, L) -> (B, d_model, L)
+
+            z = x
+            if self.prenorm:
+                # Prenorm
+                z = norm(z.transpose(-1, -2)).transpose(-1, -2)
+            
+            # Apply S4 block: we ignore the state input and output
+            
+            z, _ = layer(z, rate=rate)
+
+            # Dropout on the output of the S4 block
+            z = dropout(z)
+
+            # Residual connection
+            x = z + x
+
+            if not self.prenorm:
+                # Postnorm
+                x = norm(x.transpose(-1, -2)).transpose(-1, -2)
+
+        x = x.transpose(-1, -2)
+
+        # Pooling: average pooling over the sequence length
+        x = x.mean(dim=1)
+        meta_feats = self.meta_head(meta_feats)
+        x = torch.cat([x, meta_feats], axis=1)
+        
         # Decode the outputs
         if self.decoder is not None:
             x = self.decoder(x)  # (B, d_model) -> (B, d_output)

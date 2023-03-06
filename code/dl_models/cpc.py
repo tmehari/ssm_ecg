@@ -36,7 +36,12 @@ class CPCEncoder(nn.Sequential):
 # Cell
 class CPCModel(nn.Module):
     "CPC model"
-    def __init__(self, input_channels, strides=[5,4,2,2,2], kss=[10,8,4,4,4], features=[512,512,512,512],bn_encoder=False, n_hidden=512,n_layers=2,mlp=False,lstm=True,bias_proj=False, num_classes=None, concat_pooling=True, ps_head=0.5,lin_ftrs_head=[512],bn_head=True,skip_encoder=False,s4=False,s4_d_state=512,s4_d_model=8,s4_n_layers=4,s4_dropout=0.2,s4_l_max=1):
+    def __init__(self, input_channels, strides=[5,4,2,2,2], kss=[10,8,4,4,4], 
+                 features=[512,512,512,512],bn_encoder=False, n_hidden=512,n_layers=2,
+                 mlp=False,lstm=True,bias_proj=False, num_classes=None,
+                 concat_pooling=True, ps_head=0.5,lin_ftrs_head=[512],bn_head=True,
+                 skip_encoder=False,s4=False,s4_d_state=512,s4_d_model=8,s4_n_layers=4,
+                 s4_dropout=0.2,s4_l_max=1, use_meta_information_in_head=False):
         super().__init__()
         assert(skip_encoder is False or num_classes is not None)#pretraining only with encoder
         self.encoder = CPCEncoder(input_channels,strides=strides,kss=kss,features=features,bn=bn_encoder) if skip_encoder is False else None
@@ -92,6 +97,13 @@ class CPCModel(nn.Module):
                 layers_head+=bn_drop_lin(ni,no,bn_head,p,actn)
             self.head=nn.Sequential(*layers_head)
             
+            self.use_meta_information_in_head = use_meta_information_in_head
+            if use_meta_information_in_head:
+                # adjust head such that meta information can be incorporated
+                self.head[0] = nn.Linear(self.head[0].in_features+64, self.head[0].out_features)
+                meta_modules = bn_drop_lin(7, 64, bn=False,actn=nn.ReLU()) +\
+                bn_drop_lin(64, 64, bn=True, p=0.5, actn=nn.ReLU()) + bn_drop_lin(64, 64, bn=True, p=0.5, actn=nn.ReLU())
+                self.meta_head = nn.Sequential(*meta_modules)
 
     def forward(self, input):
         # input shape bs,ch,seq
@@ -112,6 +124,31 @@ class CPCModel(nn.Module):
                     output = torch.mean(output,dim=2)
                 else:
                     output = output[:,:,-1]
+            return self.head(output)
+    
+    def forward_with_meta(self, input, meta_feats):
+        # input shape bs,ch,seq
+        if(self.encoder is not None):
+            input_encoded = self.encoder.encode(input)
+        else:
+            input_encoded = input.transpose(1,2) #bs, seq, channels
+        if(self.s4):
+            output_rnn = self.rnn(input_encoded) #output_rnn: bs, seq, d_model
+        else:
+            output_rnn, _ = self.rnn(input_encoded) #output_rnn: bs, seq, n_hidden
+        if(self.num_classes is None):#pretraining
+            return input_encoded, self.proj(output_rnn)
+        else:#classifier
+            output = output_rnn.transpose(1,2)#bs,n_hidden,seq (i.e. standard CNN channel ordering)
+            if(self.concat_pooling is False):
+                if(self.s4):
+                    output = torch.mean(output,dim=2)
+                else:
+                    output = output[:,:,-1]
+            # append meta information to model features before classification from head
+            
+            meta_feats = self.meta_head(meta_feats)
+            output = torch.cat([output, meta_feats], axis=1)
             return self.head(output)
         
     def get_layer_groups(self):
