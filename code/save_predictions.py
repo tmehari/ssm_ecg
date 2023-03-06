@@ -14,7 +14,7 @@ def load_from_checkpoint(pl_model, checkpoint_path):
 
     state_dict = lightning_state_dict["state_dict"] if 'state_dict' in lightning_state_dict.keys() else lightning_state_dict
     fails = []
-    
+    pdb.set_trace()
     assert(len(state_dict.keys()) == len(pl_model.state_dict().keys()))
     for name, param in pl_model.named_parameters():
         if name in state_dict.keys():
@@ -30,7 +30,7 @@ def load_from_checkpoint(pl_model, checkpoint_path):
 
 def evaluate(trainer, model_path, train_fs, eval_fs, label_class='label_all', data_dir='./data/ptb_xl_fs',batch_size=128, test=True, ret_scores=False,
              ret_preds=False, datamodule=None, model='s4', input_size_in_seconds_train=1,
-             input_size_in_seconds_eval=1, d_state=8, normalize=False):
+             input_size_in_seconds_eval=1, d_state=8, normalize=False, use_meta_information_in_head=False):
     if datamodule is None:
         datamodule = ECGDataModule(
             batch_size,
@@ -38,7 +38,8 @@ def evaluate(trainer, model_path, train_fs, eval_fs, label_class='label_all', da
             label_class=label_class,
             num_workers=8,
             data_input_size=int(100*input_size_in_seconds_eval*eval_fs/100),
-            normalize=normalize
+            normalize=normalize,
+            use_meta_information_in_head=use_meta_information_in_head
         )
 
     def create_cpc():
@@ -47,13 +48,14 @@ def evaluate(trainer, model_path, train_fs, eval_fs, label_class='label_all', da
         return model
 
     def create_s4():
-        return S4Model(d_input=12, d_output=datamodule.num_classes, l_max=int(100*input_size_in_seconds_train*train_fs/100), d_state=d_state, bidirectional=True)
+        return S4Model(d_input=12, d_output=datamodule.num_classes, l_max=int(100*input_size_in_seconds_train*train_fs/100), d_state=d_state, 
+                       bidirectional=True, use_meta_information_in_head=use_meta_information_in_head)
 
     def create_s4_causal():
         return S4Model(d_input=12, d_output=datamodule.num_classes, l_max=int(100*input_size_in_seconds_train*train_fs/100), d_state=d_state, bidirectional=False)
 
     def create_res():
-        return ECGResNet("xresnet1d50", datamodule.num_classes, big_input=(datamodule.data_input_size == 1250))
+        return ECGResNet("xresnet1d50", datamodule.num_classes, big_input=(datamodule.data_input_size == 1250), use_meta_information_in_head=use_meta_information_in_head)
 
     def create_cpc_s4():
         num_encoder_layers = 4
@@ -82,7 +84,8 @@ def evaluate(trainer, model_path, train_fs, eval_fs, label_class='label_all', da
         batch_size,
         datamodule.num_samples,
         lr=0.001,
-        rate=train_fs/eval_fs
+        rate=train_fs/eval_fs,
+        use_meta_information_in_head=use_meta_information_in_head
     )
     load_from_checkpoint(pl_model, model_path)
 
@@ -115,7 +118,8 @@ def evaluate(trainer, model_path, train_fs, eval_fs, label_class='label_all', da
 @click.option('--label_class', default='label_all', help='dataset')
 @click.option('--load_finetuned', default=False, is_flag=True)
 @click.option('--extra_tag')
-def save_predictions(directory, model, save_dir, fs, batch_size, data_dir, label_class, load_finetuned, extra_tag):
+@click.option('--use_meta_information_in_head', default=False, is_flag=True)
+def save_predictions(directory, model, save_dir, fs, batch_size, data_dir, label_class, load_finetuned, extra_tag, use_meta_information_in_head):
     extra_tag = '' if extra_tag is None else "_"+extra_tag
     tag = '_finetuned' if load_finetuned else ''
     res_dir = join(save_dir, model + str(fs) + tag + extra_tag)
@@ -137,7 +141,7 @@ def save_predictions(directory, model, save_dir, fs, batch_size, data_dir, label
     for i, mod_file in tqdm(enumerate(mod_files)):
         (preds, targets), res100_aucs = evaluate(trainer, mod_file, fs, fs, label_class=label_class,data_dir=data_dir, test=True, ret_preds=True, ret_scores=False,
                                                     datamodule=None, model=model, input_size_in_seconds_train=2.5,
-                                                    input_size_in_seconds_eval=2.5, d_state=8, batch_size=batch_size, normalize=load_finetuned)
+                                                    input_size_in_seconds_eval=2.5, d_state=8, batch_size=batch_size, normalize=load_finetuned, use_meta_information_in_head=use_meta_information_in_head)
         np.save(join(res_dir, str(i) + "_.npy"), preds)
         if not os.path.isfile(join(save_dir, 'targets.npy')):
             np.save(join(save_dir, 'targets.npy'), targets)
